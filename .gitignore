@@ -1,2 +1,4 @@
 .direnv
 __pycache__
+hist_prices.json
+prices.json
