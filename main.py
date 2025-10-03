@@ -5,10 +5,6 @@ from datetime import datetime, timedelta
 from matplotlib import pyplot as plt
 from get_prices import refresh_prices
 
-# TODO
-# 1 - data validation non None for prices etc..
-# 2 - auto calculate on change
-
 def remove_outliers(y, m=2):
   mean = sum(y) / len(y)
   std = (sum((val - mean) ** 2 for val in y) / len(y)) ** 0.5
@@ -31,17 +27,17 @@ def lissage_moyenne_glissante(y, window_size=3):
   return y_smoothed
 
 class RessourceRow:
-  def __init__(self, ressource:dict, price, parent=None):
+  def __init__(self, potion_craft, ressource:dict, price, parent=None):
     self.amount = int(ressource['@count'])
     self.unique_name = ressource['@uniquename']
     self.artifact = '@maxreturnamount' in ressource
     with parent:
-      with ui.row().classes('items-center gap-2 bg-stone-900 p-2'):
+      with ui.row().classes('items-center rounded-lg p-3 gap-2 bg-stone-900 p-2'):
         ui.image(f'images/{self.unique_name}.png').style('width: 64px; height: 64px;')
         ui.label(self.unique_name).classes('whitespace-nowrap w-52 text-sm')
         ui.label(f"x {self.amount}").classes('whitespace-nowrap w-24 text-sm')
         self.checkbox = ui.checkbox(value=self.artifact).classes('whitespace-nowrap w-24 text-sm')
-        self.price_input = ui.input(value = price, label='Price', placeholder='Missing price')
+        self.price_input = ui.input(value = price, label='Price', placeholder='Missing price', on_change=potion_craft.calculate)
 
 class PotionsCraft:
   def __init__(self):
@@ -64,20 +60,20 @@ class PotionsCraft:
         ui.label('Albion Potion Crafting Calculator').classes('text-2xl')
         self.city_input = ui.toggle(["Lymhurst", "Caerleon", "Martlock", "Bridgewatch", "Thetford", "Fort Sterling", "Brecilien"], value="Lymhurst", on_change=self.show)
         with ui.row():
-          self.selling_tax_input = ui.number(label='Selling tax (%)', value=6.5)
-          self.return_rate_input = ui.number(label='Return Rate (%)', value=15)
-          self.usage_fee_input = ui.number(label='Usage fee', value=600)
+          self.selling_tax_input = ui.number(label='Selling tax (%)', value=6.5, on_change=self.calculate)
+          self.return_rate_input = ui.number(label='Return Rate (%)', value=15, on_change=self.calculate)
+          self.usage_fee_input = ui.number(label='Usage fee', value=600, on_change=self.calculate)
         with ui.row().classes('items-center gap-2'):
           self.potion_input = ui.select(potions_names, with_input=True, label="Potion", on_change=self.show)
           self.enchant_input = ui.toggle([0, 1, 2, 3], value=0, on_change=self.show)
         with ui.row():
-          ui.button('Calculate', on_click=self.calculate)
-          ui.button('Refresh', on_click=refresh_prices)
+          # ui.button('Calculate', on_click=self.calculate) useless now
+          ui.button('Refresh', on_click=self.refresh)
 
         with ui.column().classes('h-fill justify-end'):
           with ui.row().classes('items-center gap-2'):
             self.potion_image = ui.image('images/DEFAULT.png').style('width: 64px; height: 64px;')
-            self.price_input_potion = ui.input(label='Price')
+            self.price_input_potion = ui.input(label='Price', on_change=self.calculate)
 
           with ui.row().classes('items-center gap-2'):
             ui.label(' ').classes('whitespace-nowrap w-16 text-sm')
@@ -133,11 +129,11 @@ class PotionsCraft:
     else:
       craft_ressources = self.potion['enchantments']['enchantment'][self.enchant_input.value - 1]['craftingrequirements']['craftresource']
     if '@count' in craft_ressources:
-      row = RessourceRow(craft_ressources, self.get_current_item_price(craft_ressources['@uniquename'] + ( f"@{self.enchant_input.value}" if self.enchant_input.value != 0 else "" )), parent=self.ressources_ui_container)
+      row = RessourceRow(self, craft_ressources, self.get_current_item_price(craft_ressources['@uniquename'] + ( f"@{self.enchant_input.value}" if self.enchant_input.value != 0 else "" )), parent=self.ressources_ui_container)
       self.ressources_inputs.append(row)
     else:
       for ressource in craft_ressources:
-        row = RessourceRow(ressource, self.get_current_item_price(ressource['@uniquename']), parent=self.ressources_ui_container)
+        row = RessourceRow(self, ressource, self.get_current_item_price(ressource['@uniquename']), parent=self.ressources_ui_container)
         self.ressources_inputs.append(row)
 
   def clear_materials(self):
@@ -162,8 +158,9 @@ class PotionsCraft:
       with self.plot_col:
         self.plot_ui_prices = ui.pyplot(figsize=(8, 4.5))
         with self.plot_ui_prices:
-          plt.plot(x, y, "-b", label="Prix moyen")
+          plt.plot(x, y, "-b", label="Valeur marchande moyenne")
           plt.plot([x[0], x[-1]], [price, price], "-g", label="Prix Actuel")
+          plt.plot([x[0], x[-1]], [price*(1-int(self.selling_tax_input.value)/100), price*(1-int(self.selling_tax_input.value)/100)], "--g", label="Prix de vente (avec taxe)")
           plt.plot([x[0], x[-1]], [int(self.potion_craft_cost.text), int(self.potion_craft_cost.text)], "-r", label="Coût du craft")
           plt.xticks(rotation=45)
           plt.legend()
@@ -182,6 +179,8 @@ class PotionsCraft:
           plt.title(f'Amount seleld for {potion_id}')
           plt.ylabel('Qtt')
           plt.xlabel('Time UTC')
+    else:
+      ui.notification(timeout=3, message = 'Not enough data to plot')
 
 
   def show(self):
@@ -190,7 +189,9 @@ class PotionsCraft:
     self.potion_image.update()
     self.clear_materials()
     self.add_materials()
-    self.price_input_potion.set_value(self.get_current_item_price(self.potion['@uniquename']))
+    self.price_input_potion.set_value(self.get_current_item_price(self.potion['@uniquename']+ ( f"@{self.enchant_input.value}" if self.enchant_input.value != 0 else "" )))
+    self.price_input_potion.update()
+    self.calculate()
 
   def craft_price(self):
     crafting_requirements = self.potion['craftingrequirements']
@@ -208,6 +209,8 @@ class PotionsCraft:
     return round((self.usage_fee_input.value/1000) * (45 * material_amount))
 
   def calculate(self):
+    if self.check_empty_fields():
+      return
     self.potion_image_output.source = f"images/{self.potion['@uniquename'] + ( f"@{self.enchant_input.value}" if self.enchant_input.value != 0 else "" )}.png"
     self.potion_label.set_text(self.potion['@uniquename'])
     self.craft_tax_price.set_text(self.craft_fee_potion())
@@ -217,7 +220,26 @@ class PotionsCraft:
     self.craft_tax_price.update()
     self.potion_craft_cost.update()
     self.rentability.update()
+    self.potion_label.update()
     self.plot_data()
+
+  def refresh(self):
+    n = ui.notification(timeout=None, message='Refreshing', spinned=True)
+    result = refresh_prices()
+    n.dismiss()
+    ui.notification(timeout=3, message = ('Refresh successfull' if result else 'Refresh failed'))
+    self.calculate()
+
+  def check_empty_fields(self):
+    fields = [self.selling_tax_input, self.return_rate_input, self.usage_fee_input, self.price_input_potion]
+    ressources_fields = [ ressources_row.price_input for ressources_row in self.ressources_inputs ]
+    fields = fields + ressources_fields
+    for field in fields:
+      if field.value is None or field.value == '':
+        ui.notification(timeout=3, message = f'Missing input: {field.label}')
+        return True
+    return False
+
 
 potions_craft = PotionsCraft()
 potions_craft.run()
